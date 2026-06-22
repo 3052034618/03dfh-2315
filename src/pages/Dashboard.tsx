@@ -51,7 +51,11 @@ function truncateStore(name: string, max = 8): string {
 }
 
 export default function Dashboard() {
-  const { dashboardStats } = useStore()
+  const getDashboardStats = useStore((s) => s.getDashboardStats)
+  const [, forceUpdate] = useState(0)
+  const { tasks, rectifications, inspectionRecords } = useStore()
+
+  const stats = getDashboardStats()
   const {
     completionRate,
     closureRate,
@@ -60,7 +64,7 @@ export default function Dashboard() {
     topProblemStores,
     expiringLicenses,
     monthlyTrend,
-  } = dashboardStats
+  } = stats
 
   const pendingIssues = totalIssues - closedIssues
   const expiringCount = expiringLicenses.length

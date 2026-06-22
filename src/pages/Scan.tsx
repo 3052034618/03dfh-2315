@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { ArrowLeft, Check, X, AlertTriangle, Shield, FileText, MapPin, Sparkles } from "lucide-react"
 import { useStore } from "@/store/useStore"
 import type { CheckItem, IssueType } from "@/types"
@@ -6,7 +7,17 @@ import type { CheckItem, IssueType } from "@/types"
 const ISSUE_TYPES: IssueType[] = ["缺失", "不一致", "过期", "位置错误", "其他"]
 
 export default function Scan() {
-  const { tasks, currentTaskId, verifyCheckItem, markCheckItemIssue, setCurrentTaskId } = useStore()
+  const {
+    tasks,
+    currentTaskId,
+    verifyCheckItem,
+    markCheckItemIssue,
+    setCurrentTaskId,
+    finishTaskInspection,
+    addRectification,
+    storeManagers,
+  } = useStore()
+  const navigate = useNavigate()
   const [phase, setPhase] = useState<"scan" | "verify">("scan")
   const [toast, setToast] = useState("")
   const [issueFormId, setIssueFormId] = useState<string | null>(null)
@@ -32,20 +43,69 @@ export default function Scan() {
   }
 
   function handleSubmitIssue(item: CheckItem) {
+    if (!issueNote.trim()) {
+      setToast("请填写异常说明")
+      setTimeout(() => setToast(""), 1500)
+      return
+    }
     markCheckItemIssue(item.taskId, item.id, true, issueType, issueNote)
     setIssueFormId(null)
     setIssueNote("")
     setIssueType("缺失")
+    setToast("异常已标记")
+    setTimeout(() => setToast(""), 1500)
   }
 
   function handleComplete() {
     if (!task) return
-    const allVerified = task.checkItems.every((c) => c.isVerified)
-    if (!allVerified) return
-    setPhase("scan")
-    setCurrentTaskId(null)
-    setToast("核验完成")
-    setTimeout(() => setToast(""), 2000)
+    const allHandled = task.checkItems.every((c) => c.isVerified || c.hasIssue)
+    if (!allHandled) {
+      setToast("请先完成所有核验项")
+      setTimeout(() => setToast(""), 2000)
+      return
+    }
+
+    const issueItems = task.checkItems.filter((c) => c.hasIssue)
+    const manager = storeManagers.find((m) => m.storeName === task.storeName)
+    const dueDate = new Date()
+    dueDate.setDate(dueDate.getDate() + 7)
+    const deadlineStr = dueDate.toISOString().split("T")[0]
+
+    issueItems.forEach((item) => {
+      const existing = useStore
+        .getState()
+        .rectifications.find(
+          (r) => r.taskId === task.id && r.issueNote === item.issueNote && r.createdAt === new Date().toISOString().split("T")[0]
+        )
+      if (!existing) {
+        addRectification({
+          taskId: task.id,
+          storeName: task.storeName,
+          issueType: item.issueType || "其他",
+          issueNote: item.issueNote || `${item.doctorName} - 资质异常`,
+          assignedTo: manager?.name || "门店负责人",
+          deadline: deadlineStr,
+          status: "pending",
+        })
+      }
+    })
+
+    if (issueItems.length === 0) {
+      finishTaskInspection(task.id)
+      setToast("核验完成，任务已归档")
+    } else {
+      setToast(`核验完成，已派发 ${issueItems.length} 条整改单`)
+    }
+
+    setTimeout(() => {
+      setPhase("scan")
+      setCurrentTaskId(null)
+      if (issueItems.length > 0) {
+        navigate("/rectify")
+      } else {
+        navigate("/dashboard")
+      }
+    }, 1800)
   }
 
   function daysUntilExpiry(expiry: string) {
@@ -67,10 +127,7 @@ export default function Scan() {
           <div className="absolute left-2 right-2 h-0.5 bg-teal-400 animate-scan-line" />
         </div>
         <p className="mt-6 text-white/70 text-sm">将二维码放入框内</p>
-        <button
-          onClick={handleScan}
-          className="mt-10 btn-primary flex items-center gap-2"
-        >
+        <button onClick={handleScan} className="mt-10 btn-primary flex items-center gap-2">
           <Sparkles className="w-4 h-4" />
           模拟扫码
         </button>
@@ -80,7 +137,9 @@ export default function Scan() {
 
   if (!task) return null
 
-  const allVerified = task.checkItems.every((c) => c.isVerified)
+  const allHandled = task.checkItems.every((c) => c.isVerified || c.hasIssue)
+  const verifiedCount = task.checkItems.filter((c) => c.isVerified).length
+  const issueCount = task.checkItems.filter((c) => c.hasIssue).length
 
   return (
     <div className="min-h-screen bg-slate-50 pb-24 max-w-md mx-auto">
@@ -91,7 +150,12 @@ export default function Scan() {
       )}
 
       <header className="page-header">
-        <button onClick={() => { setPhase("scan"); setCurrentTaskId(null) }}>
+        <button
+          onClick={() => {
+            setPhase("scan")
+            setCurrentTaskId(null)
+          }}
+        >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1>核验清单</h1>
@@ -103,7 +167,12 @@ export default function Scan() {
           <p className="font-semibold text-sm text-slate-800">{task.storeName}</p>
           <p className="text-xs text-slate-400 mt-0.5">截止日期：{task.deadline}</p>
         </div>
-        <FileText className="w-5 h-5 text-teal-700" />
+        <div className="text-right">
+          <p className="text-xs text-emerald-600 font-semibold">
+            已确认 {verifiedCount}/{task.checkItems.length}
+          </p>
+          {issueCount > 0 && <p className="text-xs text-red-500 mt-0.5">异常 {issueCount} 项</p>}
+        </div>
       </div>
 
       <div className="px-4 space-y-3 mt-2">
@@ -119,11 +188,15 @@ export default function Scan() {
                   <p className="font-bold text-slate-800">{item.doctorName}</p>
                   <p className="text-xs text-slate-400 mt-0.5">{item.licenseNo}</p>
                 </div>
-                {item.isVerified && (
+                {item.hasIssue ? (
+                  <span className="flex items-center gap-1 text-red-600 text-xs font-semibold">
+                    <AlertTriangle className="w-4 h-4" /> 异常
+                  </span>
+                ) : item.isVerified ? (
                   <span className="flex items-center gap-1 text-emerald-600 text-xs font-semibold">
                     <Check className="w-4 h-4" /> 已确认
                   </span>
-                )}
+                ) : null}
               </div>
 
               <div className="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
@@ -133,7 +206,10 @@ export default function Scan() {
 
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {item.projectPermissions.map((p) => (
-                  <span key={p} className="bg-teal-50 text-teal-700 text-xs font-medium px-2 py-0.5 rounded-full">
+                  <span
+                    key={p}
+                    className="bg-teal-50 text-teal-700 text-xs font-medium px-2 py-0.5 rounded-full"
+                  >
                     {p}
                   </span>
                 ))}
@@ -150,7 +226,7 @@ export default function Scan() {
                 )}
               </div>
 
-              {item.hasIssue && (
+              {item.hasIssue && !showForm && (
                 <div className="mt-2 p-2 bg-amber-50 rounded-lg border border-amber-200">
                   <span className="badge-issue">{item.issueType}</span>
                   <p className="text-xs text-amber-700 mt-1">{item.issueNote}</p>
@@ -165,7 +241,9 @@ export default function Scan() {
                     className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
                   >
                     {ISSUE_TYPES.map((t) => (
-                      <option key={t} value={t}>{t}</option>
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
                     ))}
                   </select>
                   <textarea
@@ -185,7 +263,7 @@ export default function Scan() {
                 </div>
               )}
 
-              {!item.isVerified && !showForm && (
+              {!item.isVerified && !item.hasIssue && !showForm && (
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={() => handleVerify(item)}
@@ -208,12 +286,12 @@ export default function Scan() {
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 p-4 safe-area-bottom">
         <div className="max-w-md mx-auto">
-          <button
-            onClick={handleComplete}
-            disabled={!allVerified}
-            className="btn-primary w-full"
-          >
-            完成核验
+          <button onClick={handleComplete} disabled={!allHandled} className="btn-primary w-full">
+            {allHandled
+              ? issueCount > 0
+                ? `完成核验 · 派发 ${issueCount} 条整改单`
+                : "完成核验 · 归档任务"
+              : `完成核验（还剩 ${task.checkItems.length - verifiedCount - issueCount} 项）`}
           </button>
         </div>
       </div>
